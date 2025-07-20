@@ -1,62 +1,77 @@
 use leptos::*;
 use serde::{Deserialize, Serialize};
 
+
 #[cfg(feature = "hydrate")]
 use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_name = renderTechGraph)]
-    fn render_tech_graph(container_id: &str, nodes: JsValue, edges: JsValue);
+    #[wasm_bindgen(js_name = render_cytoscape_graph)]
+    fn render_cytoscape_graph(container_id: &str, elements: JsValue);
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct Node {
+pub struct CyNodeData {
     pub id: String,
     pub label: String,
-    #[serde(rename = "group")]
     pub group: String,
-    pub title: String, // Tooltip
-    pub shape: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct Edge {
-    pub from: String,
-    pub to: String,
+pub struct CyNode {
+    pub data: CyNodeData,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CyEdgeData {
+    pub id: String,
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CyEdge {
+    pub data: CyEdgeData,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Elements {
+    pub nodes: Vec<CyNode>,
+    pub edges: Vec<CyEdge>,
+}
+
+impl Elements {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.edges.is_empty()
+    }
 }
 
 #[component]
 pub fn TechGraphView(
-    nodes: Signal<Vec<Node>>,
-    edges: Signal<Vec<Edge>>,
+    elements: Signal<Option<Elements>>,
 ) -> impl IntoView {
     let graph_container_ref = create_node_ref::<html::Div>();
 
+    // This effect will re-run whenever the `elements` signal changes.
     create_effect(move |_| {
-        let current_nodes = nodes.get();
-        let current_edges = edges.get();
-        
-        if current_nodes.is_empty() {
-            return;
-        }
+        if let Some(cy_elements) = elements.get() {
+            if cy_elements.nodes.is_empty() {
+                // Don't render if there are no nodes to avoid JS errors
+                return;
+            }
+            if let Some(div) = graph_container_ref.get() {
+                div.set_id("cytoscape-container");
 
-        if let Some(div) = graph_container_ref.get() {
-            div.set_id("tech-graph-container");
-
-            #[cfg(feature = "hydrate")]
-            {
-                // Use serde_wasm_bindgen to convert Rust structs to JsValue
-                match (
-                    serde_wasm_bindgen::to_value(&current_nodes),
-                    serde_wasm_bindgen::to_value(&current_edges),
-                ) {
-                    (Ok(nodes_js), Ok(edges_js)) => {
-                        render_tech_graph("tech-graph-container", nodes_js, edges_js);
+                #[cfg(feature = "hydrate")]
+                {
+                    match serde_wasm_bindgen::to_value(&cy_elements) {
+                        Ok(elements_js) => {
+                             render_cytoscape_graph("cytoscape-container", elements_js);
+                        }
+                        Err(e) => logging::error!("Failed to serialize elements: {:?}", e),
                     }
-                    (Err(e), _) => logging::error!("Failed to serialize nodes: {:?}", e),
-                    (_, Err(e)) => logging::error!("Failed to serialize edges: {:?}", e),
                 }
             }
         }
@@ -64,18 +79,13 @@ pub fn TechGraphView(
 
     view! {
         <div class="graph-view-wrapper">
-            {move || if nodes.get().is_empty() {
-                view! {
-                    <div class="graph-placeholder">
-                        <p>"Loading technology network data..."</p>
-                    </div>
-                }.into_view()
-            } else {
-                view! {
-                     <div class="graph-container" _ref=graph_container_ref>
-                        // The JS will render the graph here
-                     </div>
-                }.into_view()
+            {move || match elements.get() {
+                Some(e) if !e.nodes.is_empty() => view! {
+                    <div class="graph-container" _ref=graph_container_ref></div>
+                }.into_view(),
+                _ => view! {
+                    <div class="graph-placeholder"><p>"Select a filter to display the technology graph."</p></div>
+                }.into_view(),
             }}
         </div>
     }
