@@ -68,7 +68,11 @@ pub fn TechGraphView(
                 {
                     match serde_wasm_bindgen::to_value(&cy_elements) {
                         Ok(elements_js) => {
-                             render_cytoscape_graph("cytoscape-container", elements_js);
+                            // Add a small delay to ensure DOM and scripts are ready
+                            wasm_bindgen_futures::spawn_local(async move {
+                                gloo_timers::future::TimeoutFuture::new(100).await;
+                                render_cytoscape_graph("cytoscape-container", elements_js);
+                            });
                         }
                         Err(e) => logging::error!("Failed to serialize elements: {:?}", e),
                     }

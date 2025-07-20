@@ -1,6 +1,14 @@
 var cy = null;
 
 function render_cytoscape_graph(containerId, elements) {
+    console.log("render_cytoscape_graph called with:", containerId, elements);
+    
+    // Check if Cytoscape is available
+    if (typeof cytoscape === 'undefined') {
+        console.error("Cytoscape library not loaded yet");
+        return;
+    }
+    
     if (cy) {
         cy.destroy();
     }
