@@ -1,7 +1,6 @@
 var network = null;
 
 function renderTechGraph(containerId, nodesJson, edgesJson) {
-    console.log("renderTechGraph called with:", containerId, "nodes:", nodesJson?.length, "edges:", edgesJson?.length);
     var container = document.getElementById(containerId);
     if (!container) {
         console.error("Graph container not found:", containerId);
@@ -160,9 +159,4 @@ function renderTechGraph(containerId, nodesJson, edgesJson) {
     };
 
     network = new vis.Network(container, data, options);
-}
-
-// Explicitly attach to window to ensure global availability
-window.renderTechGraph = renderTechGraph;
-
-console.log("graph_renderer.js loaded, renderTechGraph available:", typeof renderTechGraph); 
+} 
