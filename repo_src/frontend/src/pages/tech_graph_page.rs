@@ -26,7 +26,7 @@ struct BookTechLink {
     tech_id: i32,
 }
 
-async fn fetch_csv_data<T: for<'de> Deserialize<'de>>(_url: &str) -> Result<Vec<T>, ()> {
+async fn fetch_csv_data<T: for<'de> Deserialize<'de>>(url: &str) -> Result<Vec<T>, ()> {
     #[cfg(feature = "hydrate")]
     {
         let text = gloo_net::http::Request::get(url).send().await.map_err(|e| {
