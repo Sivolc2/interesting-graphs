@@ -6,7 +6,7 @@ async fn main() {
     use axum::Router;
     use leptos::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
-    use frontend::app_component::AppComponent; // AppComponent from the frontend crate
+    use frontend::app::App; // App from the frontend crate
     use tower_http::services::ServeDir;
     use tokio::task::LocalSet;
 
@@ -170,12 +170,12 @@ async fn main() {
         let leptos_options = conf.leptos_options;
         let addr = leptos_options.site_addr;
         
-        // generate_route_list uses the AppComponent from the frontend crate.
+        // generate_route_list uses the App from the frontend crate.
         // Server functions defined in `frontend` are automatically registered.
-        let routes = generate_route_list(AppComponent);
+        let routes = generate_route_list(App);
 
         let app = Router::new()
-            .leptos_routes(&leptos_options, routes, AppComponent)
+            .leptos_routes(&leptos_options, routes, App)
             .fallback_service(ServeDir::new(leptos_options.site_root.clone()))
             .with_state(leptos_options);
 
