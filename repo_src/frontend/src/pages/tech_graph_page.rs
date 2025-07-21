@@ -1,7 +1,7 @@
 use leptos::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use crate::components::tech_graph_view::{TechGraphView, Elements, CyNode, CyNodeData, CyEdge, CyEdgeData};
+use std::collections::{HashMap, HashSet};
+use crate::components::tech_graph_view::{TechGraphView, Node, Edge};
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq, Hash)]
 struct Book {
@@ -35,27 +35,28 @@ async fn fetch_csv_data<T: for<'de> Deserialize<'de>>(url: &str) -> Result<Vec<T
             logging::error!("Failed to get text from {}: {:?}", url, e);
         })?;
         let mut rdr = csv::Reader::from_reader(text.as_bytes());
-        let result = rdr.deserialize().collect::<Result<Vec<T>, _>>();
-        if let Err(ref e) = result {
+        rdr.deserialize().collect::<Result<Vec<T>, _>>().map_err(|e| {
             logging::error!("Failed to parse CSV from {}: {:?}", url, e);
-        }
-        result.map_err(|_|())
+        })
     }
     #[cfg(not(feature = "hydrate"))]
     {
         // Server-side: return empty data
+        logging::log!("Server-side: returning empty data for {}", url);
         Err(())
     }
 }
 
 #[component]
 pub fn TechGraphPage() -> impl IntoView {
-    let data_resource = create_resource(
+    let data_resource = create_local_resource(
         || (),
         |_| async {
+            logging::log!("Starting to fetch CSV data...");
             let books = fetch_csv_data::<Book>("/data/books.csv").await;
             let techs = fetch_csv_data::<Tech>("/data/technologies.csv").await;
             let links = fetch_csv_data::<BookTechLink>("/data/book_tech_links.csv").await;
+            logging::log!("All CSV fetch attempts completed");
             (books, techs, links)
         },
     );
@@ -63,89 +64,121 @@ pub fn TechGraphPage() -> impl IntoView {
     let (selected_technology, set_selected_technology) = create_signal::<Option<i32>>(None);
     let (selected_category, set_selected_category) = create_signal::<Option<String>>(None);
 
-    let graph_elements = create_memo(move |_| {
-        data_resource.get().and_then(|(books_res, techs_res, links_res)| {
-            let books = books_res.as_ref().ok()?;
-            let techs = techs_res.as_ref().ok()?;
-            let links = links_res.as_ref().ok()?;
+    let graph_data = create_memo(move |_| {
+        match data_resource.get() {
+            Some((books_res, techs_res, links_res)) => {
+                logging::log!("Data resource available, checking results...");
+                if let (Ok(books), Ok(techs), Ok(links)) = (books_res, techs_res, links_res) {
+                    logging::log!("All data loaded successfully: {} books, {} techs, {} links", 
+                                books.len(), techs.len(), links.len());
+                    let tech_map: HashMap<i32, Tech> = techs.iter().cloned().map(|t| (t.id, t)).collect();
+                    let book_map: HashMap<i32, Book> = books.iter().cloned().map(|b| (b.id, b)).collect();
+                    
+                    let mut nodes = Vec::new();
+                    let mut edges = Vec::new();
+                    
+                    let tech_filter = selected_technology.get();
+                    let category_filter = selected_category.get();
 
-            let mut cy_nodes = Vec::new();
-            let mut cy_edges = Vec::new();
+                    // Create category nodes (large nodes)
+                    let categories: HashSet<String> = techs.iter().map(|t| t.category.clone()).collect();
+                    for category in &categories {
+                        let _is_selected = category_filter.as_ref() == Some(category);
+                        nodes.push(Node {
+                            id: format!("c_{}", category),
+                            label: category.clone(),
+                            group: "Category".to_string(),
+                            title: format!("<b>Category: {}</b><br>Click to filter by this category", category),
+                            shape: "diamond".to_string(),
+                        });
+                    }
 
-            let tech_filter = selected_technology.get();
-            let category_filter = selected_category.get();
+                    // Create technology nodes (medium nodes) and connect to categories
+                    for tech in &techs {
+                        let is_filtered = tech_filter == Some(tech.id) || 
+                                         category_filter.as_ref() == Some(&tech.category);
+                        
+                        nodes.push(Node {
+                            id: format!("t_{}", tech.id),
+                            label: tech.name.clone(),
+                            group: if is_filtered { "TechnologyHighlighted".to_string() } else { "Technology".to_string() },
+                            title: format!("<b>{}</b><br><i>{}</i><br>{}<br>Click to see related books", 
+                                         tech.name, tech.subcategory, tech.description),
+                            shape: "dot".to_string(),
+                        });
+                        
+                        // Connect technology to its category
+                        edges.push(Edge {
+                            from: format!("t_{}", tech.id),
+                            to: format!("c_{}", tech.category),
+                        });
+                    }
 
-            if tech_filter.is_none() && category_filter.is_none() {
-                return Some(Elements::default());
-            }
+                    // Create book nodes (small nodes) and connect to technologies
+                    let mut connected_books = HashSet::new();
+                    
+                    for link in &links {
+                        if let (Some(tech), Some(book)) = (tech_map.get(&link.tech_id), book_map.get(&link.book_id)) {
+                            let tech_is_filtered = tech_filter == Some(tech.id) || 
+                                                  category_filter.as_ref() == Some(&tech.category);
+                            
+                            // Always include the book, but highlight if connected to filtered tech
+                            if !connected_books.contains(&book.id) {
+                                connected_books.insert(book.id);
+                                nodes.push(Node {
+                                    id: format!("b_{}", book.id),
+                                    label: book.title.clone(),
+                                    group: if tech_is_filtered { "BookHighlighted".to_string() } else { "Book".to_string() },
+                                    title: format!("<b>{}</b><br>by {}<br>Series: {}", 
+                                                 book.title, book.author, 
+                                                 if book.series.is_empty() { "Standalone".to_string() } else { book.series.clone() }),
+                                    shape: "box".to_string(),
+                                });
+                            }
+                            
+                            // Connect book to technology (only show if no filter or tech is relevant)
+                            if (tech_filter.is_none() && category_filter.is_none()) || 
+                               tech_filter == Some(tech.id) || 
+                               category_filter.as_ref() == Some(&tech.category) {
+                                edges.push(Edge {
+                                    from: format!("b_{}", book.id),
+                                    to: format!("t_{}", tech.id),
+                                });
+                            }
+                        }
+                    }
 
-            let mut relevant_techs = HashSet::new();
-            if let Some(tech_id) = tech_filter {
-                if let Some(tech) = techs.iter().find(|t| t.id == tech_id) {
-                    relevant_techs.insert(tech.clone());
+                    logging::log!("Generated graph with {} nodes and {} edges", nodes.len(), edges.len());
+                    (nodes, edges)
+                } else {
+                    logging::error!("Failed to load some data resources");
+                    (Vec::new(), Vec::new())
                 }
             }
-            if let Some(cat) = &category_filter {
-                for tech in techs.iter().filter(|t| &t.category == cat) {
-                    relevant_techs.insert(tech.clone());
-                }
+            None => {
+                logging::log!("Data resource not yet available");
+                (Vec::new(), Vec::new())
             }
-
-            for tech in &relevant_techs {
-                cy_nodes.push(CyNode { data: CyNodeData { id: format!("t_{}", tech.id), label: tech.name.clone(), group: "TechnologyHighlighted".to_string() } });
-            }
-            
-            let mut relevant_books = HashSet::new();
-            for link in links.iter().filter(|l| relevant_techs.iter().any(|t| t.id == l.tech_id)) {
-                if let Some(book) = books.iter().find(|b| b.id == link.book_id) {
-                    relevant_books.insert(book.clone());
-                }
-            }
-            for book in &relevant_books {
-                cy_nodes.push(CyNode { data: CyNodeData { id: format!("b_{}", book.id), label: book.title.clone(), group: "Book".to_string() } });
-            }
-            
-            for link in links.iter().filter(|l| relevant_techs.iter().any(|t| t.id == l.tech_id) && relevant_books.iter().any(|b| b.id == l.book_id)) {
-                cy_edges.push(CyEdge { data: CyEdgeData { id: format!("e_{}_{}", link.book_id, link.tech_id), source: format!("b_{}", link.book_id), target: format!("t_{}", link.tech_id) } });
-            }
-            
-            Some(Elements { nodes: cy_nodes, edges: cy_edges })
-        })
+        }
     });
+
+    let nodes = Signal::derive(move || graph_data.get().0);
+    let edges = Signal::derive(move || graph_data.get().1);
 
     view! {
         <div class="tech-graph-page">
-            <h1>"Technology Graph"</h1>
-            <p>"Visualize connections between technologies and sci-fi books."</p>
+            <h1>"Sci-Fi Technology Network"</h1>
+            <p>"Explore the relationships between books, technologies, and categories. Blue diamonds are categories, purple circles are technologies, and orange boxes are books. Select a technology or category to highlight related connections."</p>
             
             <Suspense fallback=move || view!{<p>"Loading data..."</p>}>
                 <ErrorBoundary fallback=|_| view!{<p>"Error loading graph data."</p>}>
-                    { move || data_resource.map(|(_, techs_res, _)| {
-                        let mut techs = techs_res.clone().unwrap_or_default();
-                        techs.sort_by(|a, b| a.name.cmp(&b.name));
-
-                        let mut categories: Vec<String> = techs.iter()
+                    { move || data_resource.map(|(_, techs, _)| {
+                        let techs = techs.clone().unwrap_or_default();
+                        let categories: Vec<String> = techs.iter()
                             .map(|t| t.category.clone())
                             .collect::<HashSet<_>>()
                             .into_iter()
                             .collect();
-                        categories.sort();
-                        
-                        let techs_options = techs.iter().map(|t| {
-                            let tech_id = t.id;
-                            let tech_name = t.name.clone();
-                            view!{ 
-                                <option value=tech_id selected=move || selected_technology.get() == Some(tech_id)>{tech_name}</option> 
-                            }
-                        }).collect_view();
-
-                        let categories_options = categories.iter().map(|c| {
-                            let cat_name = c.clone();
-                            let cat_name_2 = c.clone();
-                            view!{ 
-                                <option value=cat_name selected=move || selected_category.get() == Some(cat_name_2.clone())>{c.clone()}</option> 
-                            }
-                        }).collect_view();
                         
                         view! {
                             <div class="graph-controls card">
@@ -164,7 +197,9 @@ pub fn TechGraphPage() -> impl IntoView {
                                         }
                                     >
                                         <option value="none">"-- Select a Technology --"</option>
-                                        {techs_options}
+                                        {techs.iter().map(|t| view!{ 
+                                            <option value=t.id>{format!("{} ({})", t.name, t.category)}</option> 
+                                        }).collect_view()}
                                     </select>
                                 </div>
                                 <div class="control-group">
@@ -182,7 +217,7 @@ pub fn TechGraphPage() -> impl IntoView {
                                         }
                                     >
                                         <option value="none">"-- Select a Category --"</option>
-                                        {categories_options}
+                                        {categories.into_iter().map(|c| view!{ <option value=c.clone()>{c}</option> }).collect_view()}
                                     </select>
                                 </div>
                                 <button on:click=move |_| {
@@ -193,11 +228,11 @@ pub fn TechGraphPage() -> impl IntoView {
                                 </button>
                             </div>
                         }
-                    })} 
+                    })}
                 </ErrorBoundary>
             </Suspense>
             
-            <TechGraphView elements=graph_elements.into() />
+            <TechGraphView nodes=nodes edges=edges />
         </div>
     }
 } 
